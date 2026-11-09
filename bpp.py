@@ -1,16 +1,19 @@
 import streamlit as st
 from openai import OpenAI
 import difflib
+import os
+import json
 
-# ==================== 0. 页面基础配置 ====================
+# ================= 0. 页面基础配置 =================
 st.set_page_config(page_title="MediScan AI 导诊", page_icon="🏥", layout="centered")
 
-# ==================== 1. 核心配置区 ====================
-# 🚨
-API_KEY = "sk-ffbbbec0db3f45058420e959b2eb0291" 
+# ================= 1. 核心配置区 =================
+API_KEY = "sk-ffbbbec0db3f45058420e959b2eb0291" # 换成你自己的Key
 client = OpenAI(api_key=API_KEY, base_url="https://api.deepseek.com")
+LOG_FILE = "auto_kb_log.json"
 
-# ==================== 2. 本地医学知识库 ====================
+# ================= 2. 本地医学知识库 =================
+# 【请在下方中括号 [] 内部，粘贴你原来的知识库内容，注意保持 ("问题", "回答") 的格式】
 KNOWLEDGE_BASE = [
     ("医生让我做增强CT，是不是想多收钱？", "您有这个担心，我特别理解。增强CT确实比普通CT贵，但医生开这个，是因为它能看清普通CT看不到的血供和炎症范围。您可以直接问医生：‘这个检查对我有什么用？’问清楚了心里就踏实了。"),
     ("我就摔了一下，为什么非要我做CT，拍个X光不行吗？", "您觉得没必要，这很正常。但X光只能看骨头的大概，有些细微的骨折、出血、内脏损伤，X光根本看不出来。医生让您做CT，是怕漏掉隐患。"),
@@ -59,24 +62,19 @@ KNOWLEDGE_BASE = [
     ("心脏彩超报告写“二尖瓣轻度反流”，严重吗？", "轻度反流在中老年人里非常常见，就像用久了的水管阀门有点关不严。只要您没有胸闷气短，一般不用特殊治疗。下一步：去心内科看看就行。"),
     ("体检报告上的“肿瘤标志物”偏高了一点点，是不是得癌了？", "千万别自己吓自己！肿瘤标志物非常敏感，熬夜、发炎都可能让它偏高。下一步：拿着报告去肿瘤科或内科，医生通常会建议您过一个月再抽血复查。"),
     ("肺部CT做了低剂量，报告没事，以后多久筛查一次？", "如果是健康人群的低剂量螺旋CT筛查，且结果完全正常，一般建议1到2年查一次就行。如果您是老烟民，建议每年查一次。具体听呼吸科医生的建议。")   # 👆 把剩下的题库按这个格式复制到这里
+    
 ]
 
 # 防闲聊词库
 NON_MEDICAL_KEYWORDS = ["天气", "吃饭", "电影", "游戏", "股票", "你是谁"]
 
-# ==================== 3. 侧边栏（多智能体 & 参数控制） ====================
+# ================= 3. 侧边栏 =================
 with st.sidebar:
-    st.image("https://img.icons8.com/color/96/000000/hospital-3.png", width=80)
     st.title("MediScan AI v2.0")
-    
     st.markdown("---")
-    st.markdown("### 🏥 多智能体专家切换")
-    expert = st.selectbox(
-        "请选择导诊科室",
-        ["影像科专家", "口腔科专家", "健康管理专家"]
-    )
+    st.markdown("#### 👨‍⚕️ 多智能体专家切换")
+    expert = st.selectbox("请选择导诊科室：", ["影像科专家", "口腔科专家", "健康管理专家"])
     
-    # 动态 Prompt 挂载
     if expert == "影像科专家":
         current_system_prompt = "你是专业的医学影像导诊助手。重点解答CT/MRI检查前后的注意事项，安抚患者情绪，严禁开处方。"
     elif expert == "口腔科专家":
@@ -85,33 +83,45 @@ with st.sidebar:
         current_system_prompt = "你是专业健康管理助手。重点解读体检报告、指导复查，严禁开处方。"
 
     st.markdown("---")
-    st.markdown("### ⚙️ 模型与演示控制")
+    st.markdown("#### ⚙️ 模型与演示控制")
     temperature = st.slider("大模型严谨度 (Temperature)", 0.0, 1.0, 0.1, 0.1)
-    
-    # 🚨 录屏演示保命开关
     use_llm = st.toggle("开启大模型联网兜底", value=True, help="现场断网时请关闭此开关，仅展示本地知识库")
+    
+    st.markdown("---")
+    st.markdown("#### 📥 数据管理中心")
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            st.download_button(
+                label="⬇️ 下载新增的AI问答记录",
+                data=f.read(),
+                file_name="auto_kb_log.json",
+                mime="application/json"
+            )
+    else:
+        st.caption("暂无新增的AI问答记录")
 
-# ==================== 4. 页面主视觉 ====================
+# ================= 4. 页面主视觉 =================
 st.title("🏥 MediScan AI 医学影像导诊")
 st.caption(f"当前接入专家：**{expert}** | 输入您的问题，或点击下方常见场景：")
 
-# 快捷按钮区
 col1, col2 = st.columns(2)
 quick_q = None
+
 with col1:
-    if st.button("🔍 检查前：CT是不是想坑钱？", use_container_width=True): 
+    if st.button("🔍 检查前：CT是不是想坑钱？", use_container_width=True):
         quick_q = "医生让我做增强CT，是不是想多收钱？"
-    if st.button("🦷 检查中：拔牙为啥非要拍片？", use_container_width=True): 
+    if st.button("🦷 检查中：拔牙为啥非要拍片？", use_container_width=True):
         quick_q = "我就拔个牙，为什么非要我拍全景片？是不是想坑我钱？"
+
 with col2:
-    if st.button("📄 检查后：占位是癌吗？", use_container_width=True): 
-        quick_q = "报告上写“占位”，是不是就是癌？"
-    if st.button("💊 用药：二甲双胍能做CT吗？", use_container_width=True): 
+    if st.button("📄 检查后：占位是癌吗？", use_container_width=True):
+        quick_q = "报告上写'占位'，是不是就是癌？"
+    if st.button("💊 用药：二甲双胍能做CT吗？", use_container_width=True):
         quick_q = "我有糖尿病，吃了二甲双胍能做增强CT吗？"
 
-st.markdown("---") 
+st.markdown("---")
 
-# 聊天记录
+# ================= 5. 聊天记录与核心逻辑 =================
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -121,39 +131,37 @@ for msg in st.session_state.messages:
 
 user_input = st.chat_input("请描述您的问题...")
 
-# ==================== 5. 核心运行逻辑 ====================
 if user_input or quick_q:
-    if quick_q: user_input = quick_q
+    if quick_q: 
+        user_input = quick_q
         
     st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.write(user_input)
 
     with st.chat_message("assistant"):
+        reply = ""
         
-        # 1. 优先防闲聊拦截
+        # 1. 防闲聊拦截
         is_chitchat = any(keyword in user_input for keyword in NON_MEDICAL_KEYWORDS)
         
         if is_chitchat:
             st.warning("⚠️ 越界拦截")
             reply = "抱歉，我是专业的医学导诊助手，只能回答与医学检查相关的问题哦。"
             st.write(reply)
-            st.session_state.messages.append({"role": "assistant", "content": reply})
             
         else:
             # 2. 模糊匹配本地知识库
-            best_match = difflib.get_close_matches(user_input, [q for q, a in KNOWLEDGE_BASE], n=1, cutoff=0.3)
+            best_match = difflib.get_close_matches(user_input, [q for q, a in KNOWLEDGE_BASE], n=1, cutoff=0.85) if KNOWLEDGE_BASE else None
             
             if best_match:
-                # 找到匹配的问题，提取对应答案
                 matched_q = best_match[0]
                 for q, a in KNOWLEDGE_BASE:
                     if q == matched_q:
                         reply = a
                         break
                 st.success("✅ 来源：MediScan 专业审核知识库")
-                st.write(reply) # 直接秒出，无卡顿
-                st.session_state.messages.append({"role": "assistant", "content": reply})
+                st.write(reply)
                 
             else:
                 # 3. 大模型兜底
@@ -167,12 +175,26 @@ if user_input or quick_q:
                                     {"role": "user", "content": user_input}
                                 ],
                                 temperature=temperature,
-                                timeout=3.0 # 3秒超时保护
+                                timeout=5.0
                             )
-                            reply = response.choices[0].message.content
-                            st.warning("⚠️ 来源：AI 智能生成")
-                            st.write(reply)
-                    except Exception:
+                        reply = response.choices[0].message.content
+                        st.warning("⚠️ 来源：AI 智能生成")
+                        st.write(reply)
+                        
+                        # 自动入库
+                        new_data = {"q": user_input, "a": reply}
+                        logs = []
+                        if os.path.exists(LOG_FILE):
+                            with open(LOG_FILE, "r", encoding="utf-8") as f:
+                                try:
+                                    logs = json.load(f)
+                                except json.JSONDecodeError:
+                                    pass
+                        logs.append(new_data)
+                        with open(LOG_FILE, "w", encoding="utf-8") as f:
+                            json.dump(logs, f, ensure_ascii=False, indent=4)
+
+                    except Exception as e:
                         reply = "网络开小差了，建议您直接前往门诊导诊台咨询。"
                         st.info("💡 来源：本地极速兜底")
                         st.write(reply)
@@ -180,5 +202,6 @@ if user_input or quick_q:
                     reply = "未命中本地知识库。由于演示模式关闭了网络，请询问影像相关问题。"
                     st.warning("⚠️ 演示模式兜底")
                     st.write(reply)
-                
-                st.session_state.messages.append({"role": "assistant", "content": reply})
+        
+        if reply:
+            st.session_state.messages.append({"role": "assistant", "content": reply})
